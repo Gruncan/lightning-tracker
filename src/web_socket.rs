@@ -183,8 +183,7 @@ impl WebSocketClient<Detected> {
         self.state.stream = Some(stream);
 
         if response.contains("101 Switching Protocols") {
-            println!("✓ Handshake successful");
-            println!("Response: {}", response);
+            println!("Handshake successful");
             Ok(())
         } else if response.contains("401") {
             Err("Authentication required".into())
@@ -240,7 +239,7 @@ impl WebSocketClient<Connected> {
         Ok(frame)
     }
 
-    fn check_valid_utf8(payload: &[u8], i: u32) -> Result<(&str, u8), Utf8Error> {
+    fn check_valid_utf8(payload: &[u8], i: u32) -> Result<(u32, u8), Utf8Error> {
         let start = i as usize;
 
         if start >= payload.len() {
@@ -253,27 +252,28 @@ impl WebSocketClient<Connected> {
             if end > payload.len() {
                 break;
             }
-
             match std::str::from_utf8(&payload[start..end]) {
-                Ok(s) => return Ok((s, offset as u8)),
+                Ok(s) =>{
+                    let chars = s.chars().map(|c| c as u32).collect::<Vec<u32>>();
+                    if chars.len() != 1 {
+                        panic!("This should never happen!");
+                    }
+                    return Ok((chars[0], offset as u8));
+                },
                 Err(_) => continue,
             }
         }
+        Err(std::str::from_utf8(&[]).unwrap_err())
 
-        let result = std::str::from_utf8(&payload[start..start + 1]);
-        match result {
-            Ok(s) => Ok((s, 1)),
-            Err(e) => Err(e),
-        }
     }
 
-    fn convert_to_valid_utf8(payload: &[u8]) -> Result<Vec<String>, Utf8Error> {
+    pub fn convert_to_valid_utf8(payload: &[u8]) -> Result<Vec<u32>, Utf8Error> {
         let payload_len = payload.len() as u32;
-        let mut converted: Vec<String> = Vec::with_capacity(payload_len as usize);
+        let mut converted: Vec<u32> = Vec::with_capacity(payload_len as usize);
         let mut i : u32 = 0;
         while i < payload_len {
-            let (string, offset) = Self::check_valid_utf8(payload, i)?;
-            converted.push(string.to_string());
+            let (unicode, offset) = Self::check_valid_utf8(payload, i)?;
+            converted.push(unicode);
             i += offset as u32;
         }
         Ok(converted)
@@ -313,12 +313,6 @@ impl WebSocketClient<Connected> {
             stream.read_exact(&mut payload)?;
 
             let converted = Self::convert_to_valid_utf8(&payload)?;
-            let mut updated = Vec::new();
-            for string in converted {
-                for int in string.as_str().chars().map(|c| c as u32).collect::<Vec<u32>>() {
-                    updated.push(int);
-                }
-            }
 
             if masked {
                 for (i, byte) in payload.iter_mut().enumerate() {
@@ -332,7 +326,7 @@ impl WebSocketClient<Connected> {
 
             match opcode {
                 0x1 => {
-                    let decoded = Self::lzw_decode(&updated)?;
+                    let decoded = Self::lzw_decode(&converted)?;
                     let combined: String = decoded.iter().collect();
                     Ok(combined)
                 },
@@ -349,8 +343,8 @@ impl WebSocketClient<Connected> {
     }
 
     pub fn lzw_decode(data: &[u32]) -> Result<Vec<char>, Box<dyn Error>> {
-        let mut dict : HashMap<u16, Vec<u32>> = HashMap::new();
-        let size: u16 = 256;
+        let mut dict : HashMap<u32, Vec<u32>> = HashMap::new();
+        let size: u32 = 256;
         let mut dyn_size = size;
 
         let mut first = data[0];
@@ -360,10 +354,10 @@ impl WebSocketClient<Connected> {
 
         for index in 1..data.len() {
             let value = data[index];
-            let new_value : Vec<u32> = if size > value as u16 {
+            let new_value : Vec<u32> = if size > value {
                 vec!(data[index])
             }else {
-                if let Some(v) = dict.get(&(value as u16)){
+                if let Some(v) = dict.get(&(value)){
                     v.clone()
                 } else{
                     vec!(first, dyn_first)
