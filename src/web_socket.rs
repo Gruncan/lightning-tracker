@@ -1,3 +1,4 @@
+
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
@@ -10,8 +11,8 @@ use web_socket_states::*;
 
 
 
-type WebSocketResult<T> = Result<T, Box<dyn Error>>;
-type WebSocketStateFail<S: WebSocketClientState> = Result<WebSocketClient<S>, WebSocketClient<S::FallbackState>>;
+pub type WebSocketResult<T> = Result<T, Box<dyn Error>>;
+type WebSocketStateResult<S: WebSocketClientState> = Result<WebSocketClient<S>, WebSocketClient<S::FallbackState>>;
 
 struct InternalWebSocketState {
     stream: Option<TlsStream<TcpStream>>,
@@ -30,7 +31,7 @@ impl InternalWebSocketState {
 }
 
 
-struct WebSocketClient<S: WebSocketClientState> {
+pub struct WebSocketClient<S: WebSocketClientState> {
 
     state: Box<InternalWebSocketState>,
     marker: std::marker::PhantomData<S>,
@@ -51,19 +52,22 @@ impl WebSocketClient<Uninitialised> {
 
 impl WebSocketClient<Disconnected> {
 
-    pub fn connect(self) -> WebSocketStateFail<Connected> {
-        Err(self)
+    pub fn connect(self) -> WebSocketStateResult<Connected> {
+        Err(self.transition())
     }
 
-    pub fn detect_requirements(mut self, web_url: Option<&Url>) -> WebSocketStateFail<Detected> {
+    pub fn detect_requirements(mut self, web_url: Option<&Url>) -> WebSocketStateResult<Detected> {
         if let Some(web_url) = web_url {
             match Self::probe_server_requirements(web_url) {
                 Ok(headers ) => self.state.detected_headers = headers,
-                Err(_) => return Err(self),
+                Err(e) => {
+                    eprintln!("{}", e);
+                    return Err(self);
+                }
             }
-            Ok(self as WebSocketClient<Detected>)
+            Ok(self.transition())
         }else{
-            Err(self)
+            Err(self.transition())
         }
 
     }
@@ -73,9 +77,9 @@ impl WebSocketClient<Disconnected> {
         let host= web_url.host_str().unwrap();
         let port = web_url.port().unwrap_or(80);
 
-        let connector = TlsConnector::new()?;
-        let stream = TcpStream::connect((host, port))?;
-        let mut stream = connector.connect(web_url.as_str(), stream)?;
+        // let connector = TlsConnector::new()?;
+        let mut stream = TcpStream::connect((host, port))?;
+        // let mut stream = connector.connect(web_url.as_str(), stream)?;
 
         let request = format!(
             "GET / HTTP/1.1\r\n\
@@ -122,6 +126,85 @@ impl WebSocketClient<Disconnected> {
     }
 }
 
+
+impl WebSocketClient<Detected> {
+
+    pub fn connect(mut self) -> WebSocketStateResult<Connected> {
+        match Self::internal_connect(&mut self) {
+            Ok(_) => Ok(self.transition()),
+            Err(_) => Err(self.transition()),
+        }
+    }
+
+    fn internal_connect(&self) -> WebSocketResult<()> {
+        let host = self.state.url.host_str().unwrap();
+        let port = self.state.url.port().unwrap_or(443);
+        let path = self.state.url.path();
+
+        let connector = TlsConnector::new()?;
+        let stream = TcpStream::connect((host, port))?;
+        let mut stream = connector.connect(host, stream)?;
+
+
+        let mut rng = rand::thread_rng();
+        let key_bytes: [u8; 16] = rng.r#gen();
+        let key = base64::encode(&key_bytes);
+
+        let mut request = format!(
+            "GET {}{} HTTP/1.1\r\n\
+             Host: {}\r\n\
+             Upgrade: websocket\r\n\
+             Connection: Upgrade\r\n\
+             Sec-WebSocket-Key: {}\r\n\
+             Sec-WebSocket-Version: 13\r\n",
+            path, "", host, key
+        );
+
+        for (name, value) in &self.state.detected_headers {
+            request.push_str(&format!("{}: {}\r\n", name, value));
+        }
+
+        request.push_str("\r\n");
+
+        stream.write_all(request.as_bytes())?;
+
+        let mut response = String::new();
+        let mut buffer = [0; 1024];
+
+        loop {
+            let n = stream.read(&mut buffer)?;
+            response.push_str(&String::from_utf8_lossy(&buffer[..n]));
+            if response.contains("\r\n\r\n") {
+                break;
+            }
+        }
+
+        if response.contains("101 Switching Protocols") {
+            println!("✓ Handshake successful");
+            Ok(())
+        } else if response.contains("401") {
+            Err("Authentication required".into())
+        } else if response.contains("403") {
+            Err("Access forbidden".into())
+        } else {
+            Err(format!("Handshake failed: {}", response.lines().next().unwrap_or("Unknown error")).into())
+        }
+    }
+}
+
+
+impl<S> WebSocketClient<S> where S: WebSocketClientState {
+
+    fn transition<T>(self) -> WebSocketClient<T> where T: WebSocketClientState{
+        println!("Transitioning from {} to {}",
+            std::any::type_name::<S>(),
+            std::any::type_name::<T>());
+        WebSocketClient {
+            state: self.state,
+            marker: std::marker::PhantomData,
+        }
+    }
+}
 
 
 pub trait WebSocketClientState {
