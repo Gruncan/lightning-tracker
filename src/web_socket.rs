@@ -4,6 +4,8 @@ use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::str::Utf8Error;
+use std::u8;
 use native_tls::{TlsConnector, TlsStream};
 use rand::Rng;
 use url::Url;
@@ -136,7 +138,7 @@ impl WebSocketClient<Detected> {
         }
     }
 
-    fn internal_connect(&self) -> WebSocketResult<()> {
+    fn internal_connect(&mut self) -> WebSocketResult<()> {
         let host = self.state.url.host_str().unwrap();
         let port = self.state.url.port().unwrap_or(443);
         let path = self.state.url.path();
@@ -178,9 +180,11 @@ impl WebSocketClient<Detected> {
                 break;
             }
         }
+        self.state.stream = Some(stream);
 
         if response.contains("101 Switching Protocols") {
             println!("✓ Handshake successful");
+            println!("Response: {}", response);
             Ok(())
         } else if response.contains("401") {
             Err("Authentication required".into())
@@ -189,6 +193,190 @@ impl WebSocketClient<Detected> {
         } else {
             Err(format!("Handshake failed: {}", response.lines().next().unwrap_or("Unknown error")).into())
         }
+    }
+}
+
+struct Utf8BufferReturn<'a> {
+    string: &'a str,
+    offset: u8
+}
+
+
+impl WebSocketClient<Connected> {
+
+
+    pub fn send(&mut self, message: &str) -> WebSocketResult<()> {
+        let frame = self.create_frame(0x1, message.as_bytes())?;
+        if let Some(ref mut stream) = self.state.stream {
+            stream.write_all(&frame)?;
+        }
+        Ok(())
+    }
+
+    fn create_frame(&self, opcode: u8, payload: &[u8]) -> WebSocketResult<Vec<u8>> {
+        let mut frame = Vec::new();
+
+        frame.push(0x80 | opcode);
+
+        let payload_len = payload.len();
+        if payload_len < 126 {
+            frame.push(0x80 | payload_len as u8);
+        } else if payload_len <= 65535 {
+            frame.push(0x80 | 126);
+            frame.extend_from_slice(&(payload_len as u16).to_be_bytes());
+        } else {
+            frame.push(0x80 | 127);
+            frame.extend_from_slice(&(payload_len as u64).to_be_bytes());
+        }
+
+        let mut rng = rand::thread_rng();
+        let mask: [u8; 4] = rng.r#gen();
+        frame.extend_from_slice(&mask);
+
+        for (i, byte) in payload.iter().enumerate() {
+            frame.push(byte ^ mask[i % 4]);
+        }
+
+        Ok(frame)
+    }
+
+    fn check_valid_utf8(payload: &[u8], i: u32) -> Result<(&str, u8), Utf8Error> {
+        let start = i as usize;
+
+        if start >= payload.len() {
+            return Err(std::str::from_utf8(&[]).unwrap_err());
+        }
+
+        for offset in 1..=4 {
+            let end = start + offset;
+
+            if end > payload.len() {
+                break;
+            }
+
+            match std::str::from_utf8(&payload[start..end]) {
+                Ok(s) => return Ok((s, offset as u8)),
+                Err(_) => continue,
+            }
+        }
+
+        let result = std::str::from_utf8(&payload[start..start + 1]);
+        match result {
+            Ok(s) => Ok((s, 1)),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn convert_to_valid_utf8(payload: &[u8]) -> Result<Vec<String>, Utf8Error> {
+        let payload_len = payload.len() as u32;
+        let mut converted: Vec<String> = Vec::with_capacity(payload_len as usize);
+        let mut i : u32 = 0;
+        while i < payload_len {
+            let (string, offset) = Self::check_valid_utf8(payload, i)?;
+            converted.push(string.to_string());
+            i += offset as u32;
+        }
+        Ok(converted)
+
+    }
+
+    pub fn read_message(&mut self) -> WebSocketResult<String> {
+        if let Some(ref mut stream) = self.state.stream {
+            let mut header = [0u8; 2];
+            stream.read_exact(&mut header)?;
+
+            let fin = (header[0] & 0x80) != 0;
+            let opcode = header[0] & 0x0F;
+            let masked = (header[1] & 0x80) != 0;
+            let mut payload_len = (header[1] & 0x7F) as usize;
+
+            if payload_len == 126 {
+                let mut len_bytes = [0u8; 2];
+                stream.read_exact(&mut len_bytes)?;
+                payload_len = u16::from_be_bytes(len_bytes) as usize;
+            } else if payload_len == 127 {
+                let mut len_bytes = [0u8; 8];
+                stream.read_exact(&mut len_bytes)?;
+                let len_64 = u64::from_be_bytes(len_bytes);
+                if len_64 > usize::MAX as u64 {
+                    return Err("Payload too large".into());
+                }
+                payload_len = len_64 as usize;
+            }
+
+            let mut mask = [0u8; 4];
+            if masked {
+                stream.read_exact(&mut mask)?;
+            }
+
+            let mut payload = vec![0u8; payload_len];
+            stream.read_exact(&mut payload)?;
+
+            let converted = Self::convert_to_valid_utf8(&payload)?;
+            let mut updated = Vec::new();
+            for string in converted {
+                for int in string.as_str().chars().map(|c| c as u32).collect::<Vec<u32>>() {
+                    updated.push(int);
+                }
+            }
+
+            if masked {
+                for (i, byte) in payload.iter_mut().enumerate() {
+                    *byte ^= mask[i % 4];
+                }
+            }
+
+            if !fin {
+                return Err("Fragmented frames not supported".into());
+            }
+
+            match opcode {
+                0x1 => {
+                    let decoded = Self::lzw_decode(&updated)?;
+                    let combined: String = decoded.iter().collect();
+                    Ok(combined)
+                },
+                0x8 => {
+                    Err("Connection closed".into())
+                },
+                _ => {
+                    Err(format!("Unsupported opcode: {}", opcode).into())
+                }
+            }
+        } else {
+            Err("No connection available".into())
+        }
+    }
+
+    pub fn lzw_decode(data: &[u32]) -> Result<Vec<char>, Box<dyn Error>> {
+        let mut dict : HashMap<u16, Vec<u32>> = HashMap::new();
+        let size: u16 = 256;
+        let mut dyn_size = size;
+
+        let mut first = data[0];
+        let mut dyn_first = first;
+        let mut result: Vec<u32> = vec![first];
+
+
+        for index in 1..data.len() {
+            let value = data[index];
+            let new_value : Vec<u32> = if size > value as u16 {
+                vec!(data[index])
+            }else {
+                if let Some(v) = dict.get(&(value as u16)){
+                    v.clone()
+                } else{
+                    vec!(first, dyn_first)
+                }
+            };
+            result.extend_from_slice(&new_value);
+            dyn_first = new_value[0];
+            dict.insert(dyn_size, vec!(first, dyn_first));
+            dyn_size += 1;
+            first = value;
+        }
+
+        Ok(result.iter().map(|&c| char::from_u32(c).unwrap()).collect())
     }
 }
 
