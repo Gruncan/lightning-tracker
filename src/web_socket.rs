@@ -347,9 +347,9 @@ impl WebSocketClient<Connected> {
         let size: u32 = 256;
         let mut dyn_size = size;
 
-        let mut first = data[0];
-        let mut dyn_first = first;
-        let mut result: Vec<u32> = vec![first];
+        let mut first = vec!(data[0]);
+        let mut dyn_first = first.clone();
+        let mut result: Vec<u32> = vec![data[0]];
 
 
         for index in 1..data.len() {
@@ -360,14 +360,18 @@ impl WebSocketClient<Connected> {
                 if let Some(v) = dict.get(&(value)){
                     v.clone()
                 } else{
-                    vec!(first, dyn_first)
+                    let mut new_first =  first.clone();
+                    new_first.extend_from_slice(&dyn_first);
+                    new_first
                 }
             };
             result.extend_from_slice(&new_value);
-            dyn_first = new_value[0];
-            dict.insert(dyn_size, vec!(first, dyn_first));
+            dyn_first = vec![new_value[0]];
+            let mut new_first = first.clone();
+            new_first.extend_from_slice(&new_value);
+            dict.insert(dyn_size, new_first);
             dyn_size += 1;
-            first = value;
+            first = new_value;
         }
 
         Ok(result.iter().map(|&c| char::from_u32(c).unwrap()).collect())
