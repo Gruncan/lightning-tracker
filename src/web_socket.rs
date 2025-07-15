@@ -6,6 +6,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::str::Utf8Error;
 use std::u8;
+use base64::Engine;
 use native_tls::{TlsConnector, TlsStream};
 use rand::Rng;
 use url::Url;
@@ -150,7 +151,7 @@ impl WebSocketClient<Detected> {
 
         let mut rng = rand::thread_rng();
         let key_bytes: [u8; 16] = rng.r#gen();
-        let key = base64::encode(&key_bytes);
+        let key = base64::prelude::BASE64_STANDARD.encode(&key_bytes);
 
         let mut request = format!(
             "GET {}{} HTTP/1.1\r\n\
@@ -349,7 +350,7 @@ impl WebSocketClient<Connected> {
 
         let mut first = vec!(data[0]);
         let mut dyn_first = first.clone();
-        let mut result: Vec<u32> = vec![data[0]];
+        let mut result: Vec<u32> = vec!(data[0]);
 
 
         for index in 1..data.len() {
