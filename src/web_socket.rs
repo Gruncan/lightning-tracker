@@ -368,7 +368,7 @@ impl WebSocketClient<Connected> {
             result.extend_from_slice(&new_value);
             dyn_first = vec![new_value[0]];
             let mut new_first = first.clone();
-            new_first.extend_from_slice(&new_value);
+            new_first.extend_from_slice(&dyn_first);
             dict.insert(dyn_size, new_first);
             dyn_size += 1;
             first = new_value;
