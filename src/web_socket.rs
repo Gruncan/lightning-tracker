@@ -67,7 +67,7 @@ impl<S: WebSocketClientState> Clone for WebSocketClient<S> {
     fn clone(&self) -> Self {
         Self {
             state: self.state.clone(),
-            marker: self.marker.clone(),
+            marker: self.marker,
         }
     }
 }
@@ -186,7 +186,7 @@ impl WebSocketClient<Detected> {
 
         let mut rng = rand::thread_rng();
         let key_bytes: [u8; 16] = rng.r#gen();
-        let key = base64::prelude::BASE64_STANDARD.encode(&key_bytes);
+        let key = base64::prelude::BASE64_STANDARD.encode(key_bytes);
 
         let mut request = format!(
             "GET {}{} HTTP/1.1\r\n\
@@ -391,14 +391,12 @@ impl WebSocketClient<Connected> {
             let value = data[index];
             let new_value : Vec<u32> = if size > value {
                 vec!(data[index])
-            }else {
-                if let Some(v) = dict.get(&(value)){
-                    v.clone()
-                } else{
-                    let mut new_first =  first.clone();
-                    new_first.extend_from_slice(&dyn_first);
-                    new_first
-                }
+            }else if let Some(v) = dict.get(&(value)){
+                v.clone()
+            } else{
+                let mut new_first =  first.clone();
+                new_first.extend_from_slice(&dyn_first);
+                new_first
             };
             result.extend_from_slice(&new_value);
             dyn_first = vec![new_value[0]];
@@ -444,7 +442,7 @@ impl<'a> WebSocketError<'a> {
     }
 }
 
-impl<'a> Display for WebSocketError<'a> {
+impl Display for WebSocketError<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
        write!(f, "{}", self.message)
     }

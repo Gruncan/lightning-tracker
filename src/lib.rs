@@ -1,10 +1,8 @@
-use std::any::Any;
-use std::cell::RefCell;
 use std::error::Error;
-use std::fmt::{format, Display, Formatter};
+use std::fmt::{Display, Formatter};
 use url::Url;
 use crate::web_socket::web_socket_states::Disconnected;
-use crate::web_socket::{AnyWebSocketClientState, WebSocketClient, WebSocketClientState, WebSocketError};
+use crate::web_socket::{AnyWebSocketClientState, WebSocketClient, WebSocketError};
 
 pub/*(crate)*/ mod web_socket;
 pub(crate) mod prelude;
