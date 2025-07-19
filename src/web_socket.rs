@@ -38,6 +38,7 @@ impl InternalWebSocketState {
 
 
 pub struct WebSocketClient<S: WebSocketClientState> {
+    // TODO should change this..
     state: Rc<RefCell<InternalWebSocketState>>,
     marker: std::marker::PhantomData<S>,
 }
