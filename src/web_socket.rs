@@ -1,9 +1,11 @@
-
+use std::any::Any;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::rc::Rc;
 use std::str::Utf8Error;
 use std::u8;
 use base64::Engine;
@@ -36,9 +38,37 @@ impl InternalWebSocketState {
 
 
 pub struct WebSocketClient<S: WebSocketClientState> {
-
-    state: Box<InternalWebSocketState>,
+    state: Rc<RefCell<InternalWebSocketState>>,
     marker: std::marker::PhantomData<S>,
+}
+
+pub trait AnyWebSocketClientState {
+    fn as_any(&self) -> &dyn Any;
+
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+
+impl<T> AnyWebSocketClientState for WebSocketClient<T>
+where
+    T: WebSocketClientState + 'static,
+{
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+impl<S: WebSocketClientState> Clone for WebSocketClient<S> {
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+            marker: self.marker.clone(),
+        }
+    }
 }
 
 
@@ -48,7 +78,7 @@ impl WebSocketClient<Uninitialised> {
         let parsed_url = Url::parse(url)?;
 
         Ok(WebSocketClient {
-            state: Box::new(InternalWebSocketState::new(parsed_url)),
+            state: Rc::new(RefCell::new(InternalWebSocketState::new(parsed_url))),
             marker: std::marker::PhantomData,
         })
     }
@@ -60,10 +90,12 @@ impl WebSocketClient<Disconnected> {
         Err(self.transition())
     }
 
-    pub fn detect_requirements(mut self, web_url: Option<&Url>) -> WebSocketStateResult<Detected> {
+    pub fn detect_requirements(self, web_url: Option<&Url>) -> WebSocketStateResult<Detected> {
         if let Some(web_url) = web_url {
             match Self::probe_server_requirements(web_url) {
-                Ok(headers ) => self.state.detected_headers = headers,
+                Ok(headers ) => {
+                    self.state.borrow_mut().detected_headers = headers;
+                },
                 Err(e) => {
                     eprintln!("{}", e);
                     return Err(self);
@@ -141,9 +173,10 @@ impl WebSocketClient<Detected> {
     }
 
     fn internal_connect(&mut self) -> WebSocketResult<()> {
-        let host = self.state.url.host_str().unwrap();
-        let port = self.state.url.port().unwrap_or(443);
-        let path = self.state.url.path();
+        let state_ptr = self.state.borrow();
+        let host = state_ptr.url.host_str().unwrap();
+        let port = state_ptr.url.port().unwrap_or(443);
+        let path = state_ptr.url.path();
 
         let connector = TlsConnector::new()?;
         let stream = TcpStream::connect((host, port))?;
@@ -164,7 +197,9 @@ impl WebSocketClient<Detected> {
             path, "", host, key
         );
 
-        for (name, value) in &self.state.detected_headers {
+        drop(state_ptr);
+
+        for (name, value) in &self.state.borrow().detected_headers {
             request.push_str(&format!("{}: {}\r\n", name, value));
         }
 
@@ -182,7 +217,10 @@ impl WebSocketClient<Detected> {
                 break;
             }
         }
-        self.state.stream = Some(stream);
+
+        {
+            self.state.borrow_mut().stream = Some(stream);
+        }
 
         if response.contains("101 Switching Protocols") {
             println!("Handshake successful");
@@ -202,7 +240,7 @@ impl WebSocketClient<Connected> {
 
     pub fn send(&mut self, message: &str) -> WebSocketResult<()> {
         let frame = self.create_frame(0x1, message.as_bytes())?;
-        if let Some(ref mut stream) = self.state.stream {
+        if let Some(ref mut stream) = self.state.borrow_mut().stream {
             stream.write_all(&frame)?;
         }
         Ok(())
@@ -277,7 +315,7 @@ impl WebSocketClient<Connected> {
     }
 
     pub fn read_message(&mut self) -> WebSocketResult<String> {
-        if let Some(ref mut stream) = self.state.stream {
+        if let Some(ref mut stream) = self.state.borrow_mut().stream {
             let mut header = [0u8; 2];
             stream.read_exact(&mut header)?;
 
