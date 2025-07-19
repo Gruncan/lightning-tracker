@@ -1,3 +1,7 @@
+use crate::state_log;
+use base64::Engine;
+use native_tls::{TlsConnector, TlsStream};
+use rand::Rng;
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -8,12 +12,8 @@ use std::net::TcpStream;
 use std::rc::Rc;
 use std::str::Utf8Error;
 use std::u8;
-use base64::Engine;
-use native_tls::{TlsConnector, TlsStream};
-use rand::Rng;
 use url::Url;
 use web_socket_states::*;
-use crate::state_log;
 
 use crate::prelude::*;
 
@@ -409,10 +409,24 @@ impl WebSocketClient<Connected> {
 
         Ok(result.iter().map(|&c| char::from_u32(c).unwrap()).collect())
     }
+
+    pub fn close(self) -> WebSocketClient<Disconnected> {
+        {
+            let mut state_ptr = self.state.borrow_mut();
+            let stream = state_ptr.stream.as_mut();
+            if let Some(stream) = stream {
+                stream.shutdown().expect("Failed unexpected to shutdown tcp stream");
+            }
+        }
+        self.transition()
+    }
 }
 
 
-impl<S> WebSocketClient<S> where S: WebSocketClientState {
+impl<S> WebSocketClient<S>
+where
+    S: WebSocketClientState,
+{
 
     fn transition<T>(self) -> WebSocketClient<T> where T: WebSocketClientState{
         state_log!("Transitioning from {} to {}",
@@ -480,8 +494,8 @@ pub(crate) mod web_socket_states {
 
 #[cfg(test)]
 mod tests {
-    use crate::log;
     use super::*;
+    use crate::log;
 
     #[test]
     fn lzw_decode_test() -> Result<(), Box<dyn Error>> {

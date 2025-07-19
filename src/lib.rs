@@ -1,8 +1,8 @@
+use crate::web_socket::web_socket_states::{Connected, Disconnected};
+use crate::web_socket::{AnyWebSocketClientState, WebSocketClient, WebSocketError};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use url::Url;
-use crate::web_socket::web_socket_states::Disconnected;
-use crate::web_socket::{AnyWebSocketClientState, WebSocketClient, WebSocketError};
 
 pub/*(crate)*/ mod web_socket;
 pub(crate) mod prelude;
@@ -54,6 +54,15 @@ impl LightningTracker {
             return Err(Box::new(WebSocketError::new("Failed to detect requirements of server")));
         }
 
+        Ok(())
+    }
+
+    async fn close_connection(mut self) -> Result<(), Box<dyn Error>> {
+        let any_state = self.websocket_state.as_any_mut();
+        let current_state = any_state.downcast_mut::<WebSocketClient<Connected>>().unwrap();
+        let copy_state = current_state.clone();
+        self.websocket_state = Box::new(copy_state.close());
+        self.is_connected = false;
         Ok(())
     }
 }
