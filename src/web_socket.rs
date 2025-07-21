@@ -3,14 +3,13 @@ use base64::Engine;
 use native_tls::{TlsConnector, TlsStream};
 use rand::Rng;
 use std::any::Any;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::rc::Rc;
 use std::str::Utf8Error;
+use std::sync::{Arc, Mutex};
 use std::u8;
 use url::Url;
 use web_socket_states::*;
@@ -38,15 +37,15 @@ impl InternalWebSocketState {
 
 
 pub struct WebSocketClient<S: WebSocketClientState> {
-    // TODO should change this..
-    state: Rc<RefCell<InternalWebSocketState>>,
+    state: Arc<Mutex<InternalWebSocketState>>,
     marker: std::marker::PhantomData<S>,
 }
 
-pub trait AnyWebSocketClientState {
+pub trait AnyWebSocketClientState: Send {
     fn as_any(&self) -> &dyn Any;
 
     fn as_any_mut(&mut self) -> &mut dyn Any;
+
 }
 
 
@@ -61,6 +60,10 @@ where
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
+
+    // fn as_current_state<S: 'static>(&mut self) -> &mut S {
+    //     self.as_any_mut().downcast_mut::<S>().unwrap()
+    // }
 }
 
 impl<S: WebSocketClientState> Clone for WebSocketClient<S> {
@@ -79,7 +82,7 @@ impl WebSocketClient<Uninitialised> {
         let parsed_url = Url::parse(url)?;
 
         Ok(WebSocketClient {
-            state: Rc::new(RefCell::new(InternalWebSocketState::new(parsed_url))),
+            state: Arc::new(Mutex::new(InternalWebSocketState::new(parsed_url))),
             marker: std::marker::PhantomData,
         })
     }
@@ -95,7 +98,8 @@ impl WebSocketClient<Disconnected> {
         if let Some(web_url) = web_url {
             match Self::probe_server_requirements(web_url) {
                 Ok(headers ) => {
-                    self.state.borrow_mut().detected_headers = headers;
+                    let mut mutex = self.state.lock().unwrap();
+                    (*mutex).detected_headers = headers;
                 },
                 Err(e) => {
                     eprintln!("{}", e);
@@ -174,10 +178,10 @@ impl WebSocketClient<Detected> {
     }
 
     fn internal_connect(&mut self) -> WebSocketResult<()> {
-        let state_ptr = self.state.borrow();
-        let host = state_ptr.url.host_str().unwrap();
-        let port = state_ptr.url.port().unwrap_or(443);
-        let path = state_ptr.url.path();
+        let mutex = self.state.lock().unwrap();
+        let host = mutex.url.host_str().unwrap();
+        let port = mutex.url.port().unwrap_or(443);
+        let path = mutex.url.path();
 
         let connector = TlsConnector::new()?;
         let stream = TcpStream::connect((host, port))?;
@@ -198,9 +202,7 @@ impl WebSocketClient<Detected> {
             path, "", host, key
         );
 
-        drop(state_ptr);
-
-        for (name, value) in &self.state.borrow().detected_headers {
+        for (name, value) in &mutex.detected_headers {
             request.push_str(&format!("{}: {}\r\n", name, value));
         }
 
@@ -219,8 +221,10 @@ impl WebSocketClient<Detected> {
             }
         }
 
+        drop(mutex);
         {
-            self.state.borrow_mut().stream = Some(stream);
+            let mut mutex = self.state.lock().unwrap();
+            (*mutex).stream = Some(stream);
         }
 
         if response.contains("101 Switching Protocols") {
@@ -241,7 +245,8 @@ impl WebSocketClient<Connected> {
 
     pub fn send(&mut self, message: &str) -> WebSocketResult<()> {
         let frame = self.create_frame(0x1, message.as_bytes())?;
-        if let Some(ref mut stream) = self.state.borrow_mut().stream {
+        let mut mutex = self.state.lock().unwrap();
+        if let Some(ref mut stream) = mutex.stream {
             stream.write_all(&frame)?;
         }
         Ok(())
@@ -316,7 +321,8 @@ impl WebSocketClient<Connected> {
     }
 
     pub fn read_message(&mut self) -> WebSocketResult<String> {
-        if let Some(ref mut stream) = self.state.borrow_mut().stream {
+        let mut mutex = self.state.lock().unwrap();
+        if let Some(ref mut stream) = mutex.stream {
             let mut header = [0u8; 2];
             stream.read_exact(&mut header)?;
 
@@ -412,8 +418,8 @@ impl WebSocketClient<Connected> {
 
     pub fn close(self) -> WebSocketClient<Disconnected> {
         {
-            let mut state_ptr = self.state.borrow_mut();
-            let stream = state_ptr.stream.as_mut();
+            let mut mutex = self.state.lock().unwrap();
+            let stream = mutex.stream.as_mut();
             if let Some(stream) = stream {
                 stream.shutdown().expect("Failed unexpected to shutdown tcp stream");
             }
@@ -440,7 +446,7 @@ where
 }
 
 
-pub trait WebSocketClientState {
+pub trait WebSocketClientState: Send {
     type FallbackState;
 
 }
