@@ -99,7 +99,7 @@ impl WebSocketClient<Disconnected> {
             match Self::probe_server_requirements(web_url) {
                 Ok(headers ) => {
                     let mut mutex = self.state.lock().unwrap();
-                    (*mutex).detected_headers = headers;
+                    mutex.detected_headers = headers;
                 },
                 Err(e) => {
                     eprintln!("{}", e);
@@ -224,7 +224,7 @@ impl WebSocketClient<Detected> {
         drop(mutex);
         {
             let mut mutex = self.state.lock().unwrap();
-            (*mutex).stream = Some(stream);
+            mutex.stream = Some(stream);
         }
 
         if response.contains("101 Switching Protocols") {

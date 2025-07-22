@@ -1,8 +1,7 @@
 use crate::prelude::*;
 use crate::web_socket::web_socket_states::{Connected, Disconnected};
-use crate::web_socket::{AnyWebSocketClientState, WebSocketClient, WebSocketClientState, WebSocketError};
+use crate::web_socket::{AnyWebSocketClientState, WebSocketClient, WebSocketError};
 use chrono::{DateTime, Utc};
-use std::any::Any;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::sync::mpsc::Receiver;
