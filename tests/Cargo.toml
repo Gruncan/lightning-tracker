@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 lightning-tracker = {path = "../"}
 url = "2.5.4"
+tokio = "1.46.1"

@@ -1,6 +1,7 @@
 use crate::prelude::*;
 use crate::web_socket::web_socket_states::{Connected, Disconnected};
 use crate::web_socket::{AnyWebSocketClientState, WebSocketClient, WebSocketClientState, WebSocketError};
+use chrono::{DateTime, Utc};
 use std::any::Any;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -14,7 +15,7 @@ pub(crate) mod prelude;
 static URL: &str = "wss://{}.blitzortung.org/";
 
 #[derive(Debug)]
-enum LightningTrackerHost {
+pub enum LightningTrackerHost {
     WS7,
 }
 
@@ -24,40 +25,48 @@ impl Display for LightningTrackerHost {
     }
 }
 
-struct LightningTracker {
+pub struct LightningTracker {
     websocket_state: Arc<Mutex<Box<dyn AnyWebSocketClientState>>>,
     is_connected: bool,
 }
 
 
 #[derive(Debug, Deserialize)]
-struct LightningSignal {
-    sta: u32,
-    time: u64,
-    lat: f64,
-    lon: f64,
-    alt: u16,
-    status: u8,
+pub struct LightningSignal {
+    pub sta: u32,
+    pub time: u64,
+    pub lat: f64,
+    pub lon: f64,
+    pub alt: u16,
+    pub status: u8,
 }
 
 #[derive(Debug, Deserialize)]
-struct LightningData {
-    time: u64,
-    lat: f64,
-    lon: f64,
-    alt: f64,
-    pol: f64,
-    mds: u32,
-    mcg: u32,
-    status: u16,
-    region: u8,
-    sig: Vec<LightningSignal>,
-    delay: f32,
-    lonc: u32,
-    latc: u32,
+pub struct LightningData {
+    pub time: u64,
+    pub lat: f64,
+    pub lon: f64,
+    pub alt: f64,
+    pub pol: f64,
+    pub mds: u32,
+    pub mcg: u32,
+    pub status: u16,
+    pub region: u8,
+    pub sig: Vec<LightningSignal>,
+    pub delay: f32,
+    pub lonc: u32,
+    pub latc: u32,
 }
 
-struct LightningStream {
+impl LightningData {
+    pub fn get_date_time(&self) -> DateTime<Utc> {
+        let secs = (self.time / 1_000_000_000) as i64;
+        let nanos = (self.time % 1_000_000_000) as u32;
+        DateTime::from_timestamp(secs, nanos).unwrap()
+    }
+}
+
+pub struct LightningStream {
     rx: Receiver<LightningData>,
 }
 
@@ -74,7 +83,7 @@ impl LightningStream {
 
 impl LightningTracker {
 
-    fn new(host: LightningTrackerHost) -> Result<Self, Box<dyn Error>> {
+    pub fn new(host: LightningTrackerHost) -> Result<Self, Box<dyn Error>> {
         let url = URL.replace("{}", host.to_string().as_str());
         let ws_client = WebSocketClient::new(&url)?;
         Ok(LightningTracker {
@@ -84,7 +93,7 @@ impl LightningTracker {
     }
 
 
-    async fn open_connection(mut self) -> Result<(), Box<dyn Error>> {
+    pub async fn open_connection(&mut self) -> Result<(), Box<dyn Error>> {
         let request_url = Url::parse("https://www.blitzortung.org/en/live_lightning_maps.php")?;
         {
             let mut mutex = self.websocket_state.lock().unwrap();
@@ -107,7 +116,7 @@ impl LightningTracker {
         Ok(())
     }
 
-    async fn close_connection(mut self) -> Result<(), Box<dyn Error>> {
+    pub async fn close_connection(mut self) -> Result<(), Box<dyn Error>> {
         {
             let mut mutex = self.websocket_state.lock().unwrap();
             let any_state = mutex.as_any_mut();
@@ -119,7 +128,7 @@ impl LightningTracker {
         Ok(())
     }
 
-    async fn receive(&mut self) -> Result<LightningStream, Box<dyn Error>> {
+    pub async fn receive(&mut self) -> Result<LightningStream, Box<dyn Error>> {
         if !self.is_connected {
             return Err(Box::new(WebSocketError::new("Not connected")));
         }
